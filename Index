@@ -1,0 +1,225 @@
+/**
+ * Котиковый адвент — «сторож» картинок.
+ * Отдаёт картинку и пожелание дня, только если этот день уже наступил по времени Алматы.
+ * Картинки остаются приватными в вашем Google Drive.
+ */
+
+const YEAR = 2026;           // год декабря, на который рассчитан календарь
+const TZ = 'Asia/Almaty';    // часовой пояс
+const UNLOCK_HOUR = 0;       // во сколько открывается новое окошко (0 = в полночь, 7 = в 7 утра)
+const SHEET = 'Календарь';   // имя листа с данными
+
+// Папки с картинками и музыкой в Google Drive (уже вставлены)
+const FOLDERS = [
+  'https://drive.google.com/drive/folders/1lWl4NTprdeb3-sq5q5eseVTj_nD-2kQy', // Картинки
+  'https://drive.google.com/drive/folders/1dlZ-_4RKO-3b2To7L-c-W79YiS1IGZYb'  // Музыка
+];
+// Файлы называются номером дня: 01.jpg, 01.mp3, 02.png, 2 снежки.jpg…
+// Чтобы заменить картинку, просто загрузите новую с тем же номером: берётся самая свежая.
+// Файлы, имя которых начинается не с цифры (например «запас 09.jpg»), не используются.
+
+const SAMPLE = [
+  ['Распаковывает коробку с ёлочными игрушками', 'Пусть этот декабрь будет самым тёплым'],
+  ['Пьёт какао с маршмеллоу', 'Чтобы каждое утро начиналось со сладкого'],
+  ['Пишет письмо Деду Морозу', 'Загадывай смело, всё сбудется'],
+  ['Вешает гирлянду на окно', 'Пусть дома всегда горит свет, который ждёт тебя'],
+  ['Лепит снеговика', 'Сил и спокойствия на всю зиму'],
+  ['Катается на коньках', 'Пусть всё получается легко, как скольжение по льду'],
+  ['Печёт имбирное печенье', 'Немного пряностей в каждый день'],
+  ['Вяжет шарф', 'Тебе самое уютное тепло'],
+  ['Играет в снежки', 'Приглашаю на снежную битву! Проигравший варит глинтвейн'],
+  ['Спит под пледом', 'Выспаться тоже новогоднее желание'],
+  ['Мчится на санках с горки', 'Только вверх. Ну и немножко вниз, для веселья'],
+  ['Чистит мандарины', 'Пусть всё вокруг пахнет праздником'],
+  ['Смотрит новогодний фильм', 'Сегодня вечер кино, попкорн с меня'],
+  ['Делает снежного ангела', 'Ты мой ангел-хранитель'],
+  ['Выбирает ёлку на базаре', 'Самую пушистую тебе'],
+  ['Распутывает гирлянду', 'Любой клубок распутывается, если вместе'],
+  ['Катается на лыжах', 'Пусть дорога будет ровной'],
+  ['Ловит снежинки языком', 'Радоваться мелочам — главная суперсила'],
+  ['Наряжает ёлку', 'Дом там, где мы вместе'],
+  ['Заворачивает подарки', 'Самый лучший подарок — это ты'],
+  ['Смотрит на звёзды в самую длинную ночь', 'Дальше дни будут только светлее'],
+  ['Греет лапы у камина', 'Тепла тебе внутри и снаружи'],
+  ['Подписывает открытки друзьям', 'Пусть рядом всегда будут свои люди'],
+  ['Варит глинтвейн', 'За тебя!'],
+  ['Строит снежную крепость', 'Ты моя крепость'],
+  ['Гуляет по городу в огнях', 'Приглашаю на вечернюю прогулку'],
+  ['Режет оливье', 'Готовимся к главному ужину года'],
+  ['Надевает свитер с оленями', 'Сегодня день смешных свитеров'],
+  ['Загадывает желание на падающую звезду', 'Загадай, а я помогу ему сбыться'],
+  ['Зажигает бенгальские огни', 'Ещё чуть-чуть!'],
+  ['Поднимает бокал под бой курантов', 'С Новым годом, мой любимый котик! Твоя лисичка']
+];
+
+/** Запустите один раз: создаст лист с 31 строкой и ключ предпросмотра. */
+function setup() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(SHEET);
+  if (!sh) sh = ss.insertSheet(SHEET);
+  if (sh.getLastRow() < 2) {
+    const rows = [['День', 'Что делает котик', 'Пожелание']];
+    SAMPLE.forEach((r, i) => rows.push([i + 1, r[0], r[1]]));
+    sh.getRange(1, 1, rows.length, 3).setValues(rows);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, 3).setFontWeight('bold').setBackground('#7c1527').setFontColor('#ffffff');
+    sh.setColumnWidth(1, 60); sh.setColumnWidth(2, 300); sh.setColumnWidth(3, 420);
+    sh.getRange(2, 1, 31, 3).setVerticalAlignment('middle').setWrap(true);
+  }
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('PREVIEW_KEY')) {
+    props.setProperty('PREVIEW_KEY', Utilities.getUuid().replace(/-/g, '').slice(0, 10));
+  }
+  Logger.log('Готово! Ключ предпросмотра: ' + props.getProperty('PREVIEW_KEY'));
+  checkFiles();
+}
+
+/** Проверить папку: какие дни уже с картинкой и музыкой, а каких не хватает. */
+function checkFiles() {
+  if (!folderIds_().length) { Logger.log('Сначала вставьте ссылки на папки в FOLDERS вверху скрипта.'); return; }
+  CacheService.getScriptCache().remove('index');
+  const idx = index_();
+  const noImg = [], withMusic = [];
+  for (let d = 1; d <= 31; d++) {
+    if (!idx[d] || !idx[d].img) noImg.push(d);
+    if (idx[d] && idx[d].audio) withMusic.push(d);
+  }
+  Logger.log('Картинок найдено: ' + (31 - noImg.length) + ' из 31.' + (noImg.length ? ' Нет картинки для дней: ' + noImg.join(', ') : ' Все на месте!'));
+  Logger.log('Своя музыка для дней: ' + (withMusic.length ? withMusic.join(', ') : 'нет') + '. В остальные дни играет шкатулка.');
+}
+
+/** Показать ключ предпросмотра ещё раз. */
+function showPreviewKey() {
+  Logger.log('Ключ предпросмотра: ' + PropertiesService.getScriptProperties().getProperty('PREVIEW_KEY'));
+}
+
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  const key = PropertiesService.getScriptProperties().getProperty('PREVIEW_KEY');
+  const preview = Boolean(p.key && key && p.key === key);
+  let today = todayDay_();
+  if (preview) today = p.asof ? clamp_(Number(p.asof)) : 31;
+  try {
+    if (p.day) return json_(dayFull_(Number(p.day), today));
+    return json_({ today: today, preview: preview, nextIn: secondsToNext_(), days: list_(today) });
+  } catch (err) {
+    return json_({ error: String(err) });
+  }
+}
+
+// ── внутреннее ──────────────────────────────────────────
+
+function now_() { return new Date(Date.now() - UNLOCK_HOUR * 3600 * 1000); }
+
+function todayDay_() {
+  const [y, m, d] = Utilities.formatDate(now_(), TZ, 'yyyy-MM-dd').split('-').map(Number);
+  if (y > YEAR) return 31;
+  if (y < YEAR || m < 12) return 0;
+  return d;
+}
+
+function secondsToNext_() {
+  const [h, mi, s] = Utilities.formatDate(now_(), TZ, 'HH:mm:ss').split(':').map(Number);
+  return 86400 - (h * 3600 + mi * 60 + s);
+}
+
+function clamp_(n) { return Math.max(0, Math.min(31, Math.floor(n) || 0)); }
+
+function rows_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET);
+  const idx = index_();
+  const cols = Math.max(3, Math.min(5, sh.getLastColumn()));
+  return sh.getRange(2, 1, 31, cols).getDisplayValues().map(r => {
+    const day = Number(r[0]), f = idx[day] || {};
+    return { day: day, title: r[1].trim(), wish: r[2].trim(),
+             file: fileId_(r[3] || '') || f.img || '', audio: fileId_(r[4] || '') || f.audio || '' };
+  });
+}
+
+function folderIds_() {
+  return FOLDERS.map(s => { const m = String(s).match(/[-\w]{25,}/); return m ? m[0] : ''; }).filter(Boolean);
+}
+
+/** Находит файлы по номеру дня в имени. Результат кэшируется на минуту. */
+function index_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('index');
+  if (hit) return JSON.parse(hit);
+  const idx = {}, best = {};
+  folderIds_().forEach(id => walk_(DriveApp.getFolderById(id), idx, best));
+  cache.put('index', JSON.stringify(idx), 60);
+  return idx;
+}
+
+function walk_(folder, idx, best) {
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const f = files.next();
+    const m = f.getName().match(/^\s*(\d{1,2})(?!\d)/);
+    if (!m) continue;
+    const day = Number(m[1]);
+    if (day < 1 || day > 31) continue;
+    const mime = f.getMimeType();
+    const kind = mime.indexOf('image/') === 0 ? 'img' : mime.indexOf('audio/') === 0 ? 'audio' : '';
+    if (!kind) continue;
+    const t = f.getLastUpdated().getTime(), k = day + kind;
+    if (best[k] && best[k] > t) continue;
+    best[k] = t;
+    idx[day] = idx[day] || {};
+    idx[day][kind] = f.getId();
+  }
+  const subs = folder.getFolders();
+  while (subs.hasNext()) walk_(subs.next(), idx, best);
+}
+
+function fileId_(s) {
+  const m = String(s).match(/[-\w]{25,}/);
+  return m ? m[0] : '';
+}
+
+function list_(today) {
+  return rows_()
+    .filter(r => r.day >= 1 && r.day <= today)
+    .map(r => ({ day: r.day, title: r.title, wish: r.wish, thumb: thumb_(r.file), music: Boolean(r.audio) }));
+}
+
+function thumb_(id) {
+  if (!id) return '';
+  try {
+    const file = DriveApp.getFileById(id);
+    const cacheKey = 't_' + id + '_' + file.getLastUpdated().getTime();
+    const cache = CacheService.getScriptCache();
+    const hit = cache.get(cacheKey);
+    if (hit) return hit;
+    const blob = file.getThumbnail();
+    if (!blob) return '';
+    const url = dataUrl_(blob);
+    if (url.length < 95000) cache.put(cacheKey, url, 21600);
+    return url;
+  } catch (err) {
+    return '';
+  }
+}
+
+function dayFull_(d, today) {
+  if (!(d >= 1 && d <= 31)) return { error: 'Нет такого дня' };
+  if (d > today) return { locked: true, day: d };
+  const r = rows_()[d - 1];
+  let img = '';
+  if (r.file) {
+    try { img = dataUrl_(DriveApp.getFileById(r.file).getBlob()); } catch (err) { img = ''; }
+  }
+  let audio = '';
+  if (r.audio) {
+    try { audio = dataUrl_(DriveApp.getFileById(r.audio).getBlob()); } catch (err) { audio = ''; }
+  }
+  return { day: d, title: r.title, wish: r.wish, img: img, audio: audio };
+}
+
+function dataUrl_(blob) {
+  return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
