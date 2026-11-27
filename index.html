@@ -236,8 +236,10 @@ function demoData(){
 }
 async function load(){
   if(TESTMODE&&!DEMO&&!KEY){askKey("");return}
+  const slow=setTimeout(()=>{if(today<0)$("timer").textContent="Скрипт просыпается, ещё чуть-чуть…"},5000);
   try{
     const d=DEMO?demoData():await api({});
+    clearTimeout(slow);
     if(TESTMODE&&!DEMO&&!d.preview){ls.del("advent-key");KEY="";askKey("Ключ не подошёл, попробуйте ещё раз.");return}
     if(TESTMODE&&KEY)ls.set("advent-key",KEY);
     today=d.today;nextIn=d.nextIn;preview=d.preview;info={};
@@ -247,8 +249,9 @@ async function load(){
       for(const x of opened)if(!server.has(x)&&x<=today)sync(x);
       opened=new Set([...server,...opened].filter(x=>x<=today));save();
     }
-    banner();render();
+    banner();render();loadThumbs();
   }catch(e){
+    clearTimeout(slow);
     $("timer").innerHTML=`Не получилось достучаться до календаря <button class="btn retry" id="retry">Ещё раз</button>`;
     $("retry").onclick=load;
   }
@@ -257,7 +260,7 @@ function askKey(msg){
   const b=$("banner");b.hidden=false;
   $("timer").textContent="Тестовый адвент";
   b.innerHTML=`<form id="kf" style="display:contents">${msg?msg+" ":""}Введите ключ предпросмотра: <input id="kin" type="password" autocomplete="current-password" aria-label="Ключ предпросмотра" style="font:16px Nunito,sans-serif;min-height:44px;border-radius:10px;padding:0 12px;border:1px solid rgba(255,255,255,.25);background:#13234a;color:var(--ink);width:12em"> <button class="btn" type="submit" style="background:var(--gold);color:#3b2a22">Войти</button></form>`;
-  $("kf").onsubmit=e=>{e.preventDefault();KEY=$("kin").value.trim();if(KEY){$("timer").textContent="Зажигаем гирлянду…";load()}};
+  $("kf").onsubmit=e=>{e.preventDefault();KEY=$("kin").value.trim();if(KEY){$("timer").textContent="Проверяем ключ…";$("kf").querySelector("button").disabled=true;load()}};
   $("kin").focus();
 }
 function banner(){
@@ -273,6 +276,21 @@ function banner(){
 }
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&!TESTMODE&&!DEMO&&today>=0&&!$("modal").classList.contains("on"))load()});
 
+/* миниатюры за дверцами подгружаются отдельно, небольшими порциями */
+async function loadThumbs(only){
+  if(DEMO)return;
+  const need=(only||[...opened]).filter(d=>d<=today&&info[d]&&info[d].thumb===undefined);
+  for(let i=0;i<need.length;i+=6){
+    const part=need.slice(i,i+6);part.forEach(d=>info[d].thumb="");
+    try{
+      const r=await api({thumbs:part.join(",")});
+      for(const [d,url] of Object.entries(r.thumbs||{})){
+        if(!info[d])continue;info[d].thumb=url;
+        const b=document.querySelector(`.door.open[data-d="${d}"] .behind`);if(b&&url)b.innerHTML=thumbHTML(+d);
+      }
+    }catch(e){}
+  }
+}
 const thumbHTML=d=>info[d]&&info[d].thumb?`<img src="${info[d].thumb}" alt="">`:cat(scarfOf(d),d===31)+`<small>${d}</small>`;
 
 function render(){
@@ -328,7 +346,7 @@ function openDoor(d,btn){
   if(d>today){btn.classList.remove("shake");void btn.offsetWidth;btn.classList.add("shake");
     toast(`Мур, ещё рано! Это окошко откроется ${d} декабря`);return}
   Music.unlock();const first=markOpen(d);if(first)Music.chime();
-  if(first){btn.classList.add("open");btn.querySelector(".behind").innerHTML=thumbHTML(d);setTimeout(()=>show(d),reduce?0:750)}
+  if(first){btn.classList.add("open");btn.querySelector(".behind").innerHTML=thumbHTML(d);loadThumbs([d]);setTimeout(()=>show(d),reduce?0:750)}
   else show(d);
 }
 function close(){Music.stop();$("modal").classList.remove("on");clearInterval(typeT);render()}
