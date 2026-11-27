@@ -98,6 +98,8 @@ h1{font:400 clamp(44px,8vw,80px)/1 "Marck Script",cursive;margin:0;color:#fff;te
 footer{text-align:center;color:var(--muted);font:400 22px "Marck Script",cursive;margin-top:26px}
 .snd{position:fixed;top:12px;left:12px;z-index:35;width:44px;height:44px;border-radius:50%;border:1px solid rgba(240,207,122,.45);background:rgba(12,22,48,.7);color:var(--gold);display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(4px)}
 .snd:focus-visible,.tune:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.snd.hint{animation:hint 1.6s ease-in-out infinite}
+@keyframes hint{50%{box-shadow:0 0 0 8px rgba(240,207,122,.25)}}
 .snd[aria-pressed=false]{color:var(--muted);border-color:rgba(255,255,255,.2)}
 .tune{display:inline-block;margin:10px auto 0;min-height:44px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:#8a6d5c;font:600 14px Nunito,sans-serif;cursor:pointer}
 .tune:hover{background:#f3e8d6}
@@ -253,6 +255,8 @@ async function load(){
       opened=new Set([...server,...opened].filter(x=>x<=today));save();
     }
     banner();render();loadThumbs();
+    if(today>=1&&(!bgManual||bgDay>today)){bgManual=false;if(bgDay!==today){setBg(today)}}
+    if(today>=1&&info[today]&&info[today].music&&!DEMO)getPart(today,"audio");
   }catch(e){
     clearTimeout(slow);
     $("timer").innerHTML=`Не получилось достучаться до календаря <button class="btn retry" id="retry">Ещё раз</button>`;
@@ -335,17 +339,14 @@ function show(d){
   w.classList.toggle("long",wish.length>140);
   if(reduce){w.textContent=wish}else{w.textContent="";let i=0;const step=Math.max(1,Math.ceil(wish.length/70));typeT=setInterval(()=>{i+=step;w.textContent=wish.slice(0,i);if(i>=wish.length)clearInterval(typeT)},40)}
   $("mTask").hidden=!it.task;$("mTaskT").textContent=it.task||"";
-  const song=it.song||(it.music?"Мелодия дня":TUNES[tuneOf(d)].t);
-  $("tune").textContent=it.music&&!DEMO?`♪ ${song} · загружается…`:`♪ ${song} · сыграть ещё раз`;
   $("prev").disabled=d<=1;$("next").disabled=d>=today;
   $("modal").classList.add("on");$("close").focus();$("mPic").parentElement.scrollTop=0;
   if(d===31)confetti();
-  if(!it.music||DEMO)Music.play(d);else Music.stop();
+  tuneLabel();
   if(DEMO)return;
   const live=()=>cur===d&&$("modal").classList.contains("on");
   pic.classList.add("loading");
   getPart(d,"img").then(src=>{if(!live())return;pic.classList.remove("loading");if(src)pic.innerHTML=`<img src="${src}" alt="">`});
-  if(it.music)getPart(d,"audio").then(src=>{if(!live())return;$("tune").textContent=`♪ ${song} · сыграть ещё раз`;Music.play(d,src||null)});
 }
 function openDoor(d,btn){
   if(today<0)return;
@@ -355,7 +356,7 @@ function openDoor(d,btn){
   if(first){btn.classList.add("open");btn.querySelector(".behind").innerHTML=thumbHTML(d);loadThumbs([d]);setTimeout(()=>show(d),reduce?0:750)}
   else show(d);
 }
-function close(){Music.stop();$("modal").classList.remove("on");clearInterval(typeT);render()}
+function close(){$("modal").classList.remove("on");clearInterval(typeT);render()}
 
 $("grid").addEventListener("click",e=>{const b=e.target.closest(".door");if(b)openDoor(+b.dataset.d,b)});
 $("close").onclick=close;
@@ -409,17 +410,21 @@ const Music=(()=>{
   }
   const freq=tok=>{const m=tok.match(/^([A-G])(#|b)?(\d)$/);return m?12*(+m[3]+1)+{C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1]]+(m[2]==="#"?1:m[2]==="b"?-1:0):null};
   function stop(){
-    if(!cur||!ctx)return;const c=cur;cur=null;
+    if(!cur||!ctx)return;const c=cur;cur=null;clearTimeout(c.timer);
     try{c.g.gain.cancelScheduledValues(ctx.currentTime);c.g.gain.setTargetAtTime(0,ctx.currentTime,.12)}catch(e){}
     if(c.src)try{c.src.stop(ctx.currentTime+.6)}catch(e){}
     setTimeout(()=>{try{c.g.disconnect()}catch(e){}},1000);
   }
   function playTune(name){
-    const T=TUNES[name],g=bus(true),beat=60/T.bpm;cur={g};let t=ctx.currentTime+.12;
-    for(const tok of T.n.split(/\s+/)){
-      const [p,len]=tok.split(":"),midi=freq(p);const d=(len?+len:1)*beat;
-      if(midi!==null)tone(g,440*2**((midi+T.tr-69)/12),t,Math.max(1.4,d*1.6),.2);t+=d;
-    }
+    const T=TUNES[name],g=bus(true),beat=60/T.bpm,me={g};cur=me;
+    (function round(){
+      if(cur!==me)return;let t=ctx.currentTime+.12;const t0=t;
+      for(const tok of T.n.split(/\s+/)){
+        const [p,len]=tok.split(":"),midi=freq(p);const d=(len?+len:1)*beat;
+        if(midi!==null)tone(g,440*2**((midi+T.tr-69)/12),t,Math.max(1.4,d*1.6),.2);t+=d;
+      }
+      me.timer=setTimeout(round,(t-t0+2.5)*1000);
+    })();
   }
   async function playFile(url){
     const g=bus(false),me={g};cur=me;
@@ -427,13 +432,15 @@ const Music=(()=>{
       const bin=atob(url.slice(url.indexOf(",")+1)),u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
       const buf=await ctx.decodeAudioData(u8.buffer);if(cur!==me)return;
       const s=ctx.createBufferSource();s.buffer=buf;g.gain.setValueAtTime(0,ctx.currentTime);g.gain.linearRampToValueAtTime(.9,ctx.currentTime+1.2);
-      s.connect(g);s.start();me.src=s;
+      s.loop=true;s.connect(g);s.start();me.src=s;
     }catch(e){}
   }
   function play(d,file){last=[d,file];stop();if(!on||!init())return;file?playFile(file):playTune(tuneOf(d))}
   function chime(){if(!on||!init())return;const g=bus(true);[1568,1976,2349,3136].forEach((f,i)=>tone(g,f,ctx.currentTime+i*.07,1.2,.08))}
+  function pause(){if(ctx&&ctx.state==='running')ctx.suspend()}
+  function resume(){if(ctx&&on&&ctx.state==='suspended')ctx.resume()}
   function toggle(){on=!on;try{localStorage.setItem("advent-sound",on?"on":"off")}catch(e){}if(!on)stop();return on}
-  return{unlock:init,play,stop,chime,toggle,replay:()=>last&&play(...last),get on(){return on}};
+  return{unlock:init,play,stop,chime,toggle,pause,resume,replay:()=>last&&play(...last),get on(){return on}};
 })();
 
 function soundButton(){
@@ -442,9 +449,36 @@ function soundButton(){
   b.setAttribute("aria-pressed",String(Music.on));b.setAttribute("aria-label",Music.on?"Выключить музыку":"Включить музыку");
 }
 
-$("snd").onclick=()=>{Music.unlock();const on=Music.toggle();soundButton();if(on&&$("modal").classList.contains("on"))Music.replay()};
-$("tune").onclick=()=>{Music.unlock();if(!Music.on){Music.toggle();soundButton()}Music.replay()};
-soundButton();
+/* фоновая музыка: песня дня играет по кругу всё время, пока открыт сайт */
+let started=false,bgDay=0,bgManual=false;
+const songName=d=>{const it=info[d]||{};return it.song||(it.music?"Мелодия дня":TUNES[tuneOf(d)].t)};
+function setBg(d,manual){
+  if(!(d>=1))return;bgDay=d;if(manual)bgManual=true;tuneLabel();
+  if(!started||!Music.on)return;
+  const it=info[d]||{};
+  if(it.music&&!DEMO){
+    Music.stop();tuneLabel(true);
+    getPart(d,"audio").then(src=>{if(bgDay!==d||!Music.on)return;Music.play(d,src||null);tuneLabel()});
+  }else Music.play(d,null);
+}
+function startMusic(){
+  if(started)return;started=true;Music.unlock();$("snd").classList.remove("hint");
+  if(Music.on)setBg(bgDay||today);
+}
+function tuneLabel(loading){
+  if(!cur||!$("modal").classList.contains("on"))return;
+  const playing=started&&Music.on&&bgDay===cur;
+  $("tune").textContent=`♪ ${songName(cur)} · ${playing?(loading?"загружается…":"играет сейчас"):"включить эту песню"}`;
+}
+$("snd").onclick=e=>{
+  if(!started){startMusic();soundButton();return}
+  Music.unlock();const on=Music.toggle();soundButton();if(on)setBg(bgDay||today);tuneLabel();
+};
+$("tune").onclick=()=>{startMusic();if(!Music.on){Music.toggle();soundButton()}setBg(cur,true)};
+document.addEventListener("pointerdown",e=>{if(!e.target.closest("#snd,#tune"))startMusic()},{capture:true});
+document.addEventListener("keydown",()=>startMusic(),{capture:true});
+document.addEventListener("visibilitychange",()=>{document.hidden?Music.pause():Music.resume()});
+soundButton();if(Music.on)$("snd").classList.add("hint");
 
 /* гирлянда */
 const COLORS=["#ff5a5f","#ffd166","#5ad1a0","#6fa8ff","#ff9ff3"];
