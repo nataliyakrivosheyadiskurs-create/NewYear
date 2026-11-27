@@ -205,12 +205,18 @@ const API="https://script.google.com/macros/s/AKfycbwpzCSoNvhp2UOmeiEzPL3f_DhLer
 /* ================================================================================================ */
 const DEMO=!/^https:\/\/script\.google/.test(API);
 const qs=new URLSearchParams(location.search);
-const KEY=qs.get("key")||"",ASOF=qs.get("asof")||"";
-const LS="advent-2026-opened";
+const TESTMODE=qs.has("test")||qs.has("key");
+const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}},del:k=>{try{localStorage.removeItem(k)}catch(e){}}};
+let KEY=qs.get("key")||(TESTMODE?ls.get("advent-key")||"":"");
+let ASOF=qs.has("asof")?qs.get("asof"):(TESTMODE?ls.get("advent-asof")||"":"");
+const LS=TESTMODE?"advent-2026-test-opened":"advent-2026-opened";
 
 let opened=new Set();
-try{opened=new Set(JSON.parse(localStorage.getItem(LS)||"[]"))}catch(e){}
-const save=()=>{try{localStorage.setItem(LS,JSON.stringify([...opened]))}catch(e){}};
+try{opened=new Set(JSON.parse(ls.get(LS)||"[]"))}catch(e){}
+const save=()=>ls.set(LS,JSON.stringify([...opened]));
+/* в основном режиме открытые окошки запоминаются на сервере, чтобы были одинаковыми на всех устройствах */
+const sync=d=>{if(!DEMO&&!TESTMODE)api({open:d}).catch(()=>{})};
+function markOpen(d){if(opened.has(d))return false;opened.add(d);save();sync(d);return true}
 
 let today=-1,nextIn=0,info={},full={},preview=false;
 
@@ -219,35 +225,53 @@ function almaty(){
   return p;
 }
 function api(extra){
-  const u=new URLSearchParams(extra);if(KEY)u.set("key",KEY);if(ASOF)u.set("asof",ASOF);
+  const u=new URLSearchParams(extra);if(TESTMODE&&KEY)u.set("key",KEY);if(TESTMODE&&ASOF)u.set("asof",ASOF);
   return fetch(API+"?"+u).then(r=>r.json()).then(j=>{if(j.error)throw new Error(j.error);return j});
 }
 function demoData(){
   const n=almaty();let t=(n.year>2026)?31:(n.year<2026||n.month<12)?0:n.day;
-  if(ASOF)t=Math.max(0,Math.min(31,+ASOF||0));
-  return{today:t,preview:!!ASOF,nextIn:86400-(n.hour*3600+n.minute*60+n.second),
+  if(ASOF)t=Math.max(0,Math.min(31,+ASOF||0));else if(TESTMODE)t=31;
+  return{today:t,preview:TESTMODE,nextIn:86400-(n.hour*3600+n.minute*60+n.second),
     days:DAYS.slice(0,t).map(([title,wish],i)=>({day:i+1,title,wish,thumb:""}))};
 }
 async function load(){
+  if(TESTMODE&&!DEMO&&!KEY){askKey("");return}
   try{
     const d=DEMO?demoData():await api({});
+    if(TESTMODE&&!DEMO&&!d.preview){ls.del("advent-key");KEY="";askKey("Ключ не подошёл, попробуйте ещё раз.");return}
+    if(TESTMODE&&KEY)ls.set("advent-key",KEY);
     today=d.today;nextIn=d.nextIn;preview=d.preview;info={};
     for(const x of d.days)info[x.day]=x;
+    if(!DEMO&&!TESTMODE&&Array.isArray(d.opened)){
+      const server=new Set(d.opened);
+      for(const x of opened)if(!server.has(x)&&x<=today)sync(x);
+      opened=new Set([...server,...opened].filter(x=>x<=today));save();
+    }
     banner();render();
   }catch(e){
     $("timer").innerHTML=`Не получилось достучаться до календаря <button class="btn retry" id="retry">Ещё раз</button>`;
     $("retry").onclick=load;
   }
 }
+function askKey(msg){
+  const b=$("banner");b.hidden=false;
+  $("timer").textContent="Тестовый адвент";
+  b.innerHTML=`<form id="kf" style="display:contents">${msg?msg+" ":""}Введите ключ предпросмотра: <input id="kin" type="password" autocomplete="current-password" aria-label="Ключ предпросмотра" style="font:16px Nunito,sans-serif;min-height:44px;border-radius:10px;padding:0 12px;border:1px solid rgba(255,255,255,.25);background:#13234a;color:var(--ink);width:12em"> <button class="btn" type="submit" style="background:var(--gold);color:#3b2a22">Войти</button></form>`;
+  $("kf").onsubmit=e=>{e.preventDefault();KEY=$("kin").value.trim();if(KEY){$("timer").textContent="Зажигаем гирлянду…";load()}};
+  $("kin").focus();
+}
 function banner(){
   const b=$("banner");
-  if(!DEMO&&!preview){b.hidden=true;return}
-  const opts=["<option value=''>все дни открыты</option>"].concat(Array.from({length:32},(_,i)=>`<option value="${i}" ${ASOF===String(i)?"selected":""}>как будто сегодня ${i?i+" декабря":"ещё ноябрь"}</option>`)).join("");
+  if(!TESTMODE&&!DEMO){b.hidden=true;return}
+  const opts=["<option value=''>открыты все 31 день</option>"].concat(Array.from({length:32},(_,i)=>`<option value="${i}" ${ASOF===String(i)?"selected":""}>как будто сегодня ${i?i+" декабря":"ещё ноябрь"}</option>`)).join("");
   b.hidden=false;
-  b.innerHTML=(DEMO?"Демо-режим: скрипт ещё не подключён, картинки примерные. ":"Режим предпросмотра для лисички. ")+
-    `<select id="asof" aria-label="Дата для предпросмотра">${opts}</select>`;
-  $("asof").onchange=e=>{const u=new URLSearchParams(location.search);e.target.value===""?u.delete("asof"):u.set("asof",e.target.value);if(DEMO&&!u.has("asof"))u.set("asof","31");location.search=u};
+  b.innerHTML=`<b style="color:var(--gold)">Тестовый адвент.</b> Открывайте окошки сколько угодно, у котика ничего не изменится.
+    <select id="asof" aria-label="Дата для проверки">${opts}</select>
+    <button class="btn" id="resetT" style="background:rgba(255,255,255,.12);color:var(--ink)">Закрыть все окошки</button>`;
+  $("asof").onchange=e=>{ASOF=e.target.value;ls.set("advent-asof",ASOF);today=-1;full={};render();load()};
+  $("resetT").onclick=()=>{opened.clear();save();render();toast("Все окошки снова закрыты")};
 }
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&!TESTMODE&&!DEMO&&today>=0&&!$("modal").classList.contains("on"))load()});
 
 const thumbHTML=d=>info[d]&&info[d].thumb?`<img src="${info[d].thumb}" alt="">`:cat(scarfOf(d),d===31)+`<small>${d}</small>`;
 
@@ -303,7 +327,7 @@ function openDoor(d,btn){
   if(today<0)return;
   if(d>today){btn.classList.remove("shake");void btn.offsetWidth;btn.classList.add("shake");
     toast(`Мур, ещё рано! Это окошко откроется ${d} декабря`);return}
-  Music.unlock();const first=!opened.has(d);opened.add(d);save();if(first)Music.chime();
+  Music.unlock();const first=markOpen(d);if(first)Music.chime();
   if(first){btn.classList.add("open");btn.querySelector(".behind").innerHTML=thumbHTML(d);setTimeout(()=>show(d),reduce?0:750)}
   else show(d);
 }
@@ -312,8 +336,8 @@ function close(){Music.stop();$("modal").classList.remove("on");clearInterval(ty
 $("grid").addEventListener("click",e=>{const b=e.target.closest(".door");if(b)openDoor(+b.dataset.d,b)});
 $("close").onclick=close;
 $("modal").addEventListener("click",e=>{if(e.target.id==="modal")close()});
-$("prev").onclick=()=>{Music.unlock();opened.add(cur-1);save();show(cur-1)};
-$("next").onclick=()=>{Music.unlock();opened.add(cur+1);save();show(cur+1)};
+$("prev").onclick=()=>{Music.unlock();markOpen(cur-1);show(cur-1)};
+$("next").onclick=()=>{Music.unlock();markOpen(cur+1);show(cur+1)};
 document.addEventListener("keydown",e=>{if(!$("modal").classList.contains("on"))return;if(e.key==="Escape")close();if(e.key==="ArrowLeft"&&!$("prev").disabled)$("prev").click();if(e.key==="ArrowRight"&&!$("next").disabled)$("next").click()});
 $("moon").onclick=()=>toast("Лисичка машет тебе с луны");
 
